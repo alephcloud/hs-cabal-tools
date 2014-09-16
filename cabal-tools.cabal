@@ -52,7 +52,7 @@ Library
     build-depends:
         Cabal >= 1.18,
         base >= 4.6 && < 5.0,
-        directory >= 1.2.1.0,
+        directory >= 1.2,
         filepath >= 1.3
 
     ghc-options: -Wall
