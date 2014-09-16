@@ -56,9 +56,7 @@
 --    > import Distribution.Simple
 --    >
 --    > main :: IO ()
---    > main = defaultMainWithHooks simpleUserHooks
---    >     { postConf = CabalTools.installSourceDependencies (postConf simpleUserHooks)
---    >     }
+--    > main = defaultMainWithHooks (CabalTools.installSourceDependencies simpleUserHooks)
 --    >
 --
 -- With all methods the field @Build-Type@ in the package description (cabal) file
@@ -135,7 +133,6 @@ import Data.Monoid
 
 import Distribution.PackageDescription
 import Distribution.Simple
-import Distribution.Simple.LocalBuildInfo
 import Distribution.Simple.Program
 import Distribution.Simple.Setup
 import Distribution.Simple.Utils
@@ -150,29 +147,43 @@ sourceDependenciesDir :: FilePath
 sourceDependenciesDir = "source-dependencies-repositories"
 
 main :: IO ()
-main = defaultMainWithHooks simpleUserHooks
-    { confHook = installSourceDependencies (confHook simpleUserHooks)
-    , hookedPrograms = [gitProgram, cabalProgram]
-    }
+main = defaultMainWithHooks (installSourceDependencies simpleUserHooks)
 
--- | Modfies a given 'confHook' to install source dependencies from
+-- | Modfies a given record of 'UserHooks' to install source dependencies from
 -- <https://github.com/ GitHub> repositories that are specified in a file named
 -- @source-dependencies@.
 --
 installSourceDependencies
-    :: ((GenericPackageDescription, HookedBuildInfo) -> ConfigFlags -> IO LocalBuildInfo)
-    -> (GenericPackageDescription, HookedBuildInfo)
+    :: UserHooks
+    -> UserHooks
+installSourceDependencies hooks = hooks
+    { preConf = installSourceDependenciesPreConf (preConf hooks)
+    , hookedPrograms = gitProgram : cabalProgram : hookedPrograms hooks
+    }
+
+-- TODO: is there a way with cabal to actually pass an argument from the
+-- command line to Args?
+installSourceDependenciesPreConf
+    :: (Args -> ConfigFlags -> IO HookedBuildInfo)
+    -> Args
     -> ConfigFlags
-    -> IO LocalBuildInfo
-installSourceDependencies hook (desc, bInfo) cFlags = do
-    let unconfProgramDb = addKnownPrograms [gitProgram, cabalProgram] (configPrograms cFlags)
-    programDb <- configureAllKnownPrograms verbosity unconfProgramDb
+    -> IO HookedBuildInfo
+installSourceDependenciesPreConf hook args flags = do
+    programDb <- configureProgram verbosity cabalProgram
+        =<< configureProgram verbosity gitProgram (configPrograms flags)
+    _ <- requireProgram verbosity cabalProgram programDb
+    _ <- requireProgram verbosity gitProgram programDb
     whenM (doesFileExist sourceDependenciesFile) $ run programDb
-    hook (desc, bInfo) cFlags
+    hook args_ flags
 
   where
+    (args_, force) = if forceArg `L.elem` args
+        then (L.delete forceArg args, True)
+        else (args, False)
 
-    verbosity = fromFlag $ configVerbosity cFlags
+    forceArg = "--force-source-reinstalls" -- FIXME not sure how to make this work
+
+    verbosity = fromFlag $ configVerbosity flags
 
     commentOrEmpty l = case trim l of
         [] -> True
@@ -194,28 +205,46 @@ installSourceDependencies hook (desc, bInfo) cFlags = do
 
             -- Check if git repository exits
             doesDirectoryExist (sourceDependenciesDir </> getRepoName repoUrl) >>= \x -> if x
-              then gitPull repoUrl revSpec
-              else gitClone repoUrl revSpec
+                then gitPull repoUrl revSpec
+                else gitClone repoUrl revSpec
 
             -- FIXME maybe we could be a bit more clever here
             doesDirectoryExist "cabal.sandbox.config" >>= \x -> if x
-               then cabalAddSandbox repoUrl
-               -- FIXME we shouldn't do this at configuration time
-               -- but during install.
-               else cabalInstall repoUrl
+                then cabalAddSandbox repoUrl
+                -- FIXME we shouldn't do this at configuration time
+                -- but during install.
+                else do
+                    info verbosity "install source dependencies into user data base"
+                    when force $ info verbosity "source dependencies are installed with --force-reinstall"
+                    cabalInstall repoUrl
       where
         gitPull repoUrl revSpec = runDbProgram verbosity gitProgram programDb
-            ["-C", "." </> sourceDependenciesDir </> getRepoName repoUrl, "pull", "origin", revSpec]
+            [ "-C", "." </> sourceDependenciesDir </> getRepoName repoUrl
+            , "pull"
+            , "origin"
+            , revSpec
+            ]
 
         gitClone repoUrl revSpec = runDbProgram verbosity gitProgram programDb
-            ["-C", "." </> sourceDependenciesDir, "clone", "-b", revSpec, repoUrl]
+            [ "-C", "." </> sourceDependenciesDir
+            , "clone"
+            , "-b", revSpec
+            , repoUrl
+            ]
 
         cabalAddSandbox repoUrl = runDbProgram verbosity cabalProgram programDb
-            ["sandbox", "add-source", sourceDependenciesDir </> getRepoName repoUrl]
+            [ "sandbox"
+            , "add-source"
+            , sourceDependenciesDir </> getRepoName repoUrl
+            ]
+
+        -- FIXME FIXME FIMXE
+        -- cabalInstallArgs = "install" : [ "--force-reinstall" | force ]
+        cabalInstallArgs = "install" : [ "--force-reinstall" | True ]
 
         cabalInstall repoUrl = case lookupProgram cabalProgram programDb of
             Just configuredCabal -> runProgramInvocation verbosity $
-                (programInvocation configuredCabal ["install"])
+                (programInvocation configuredCabal cabalInstallArgs)
                     { progInvokeCwd = Just $ "." </> sourceDependenciesDir </> getRepoName repoUrl
                     }
             Nothing -> error "Could not execute cabal install: cabal is not configured for execution"
