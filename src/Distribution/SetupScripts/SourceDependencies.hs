@@ -240,6 +240,18 @@ installSourceDependenciesPreConf hook args flags = do
 
         -- FIXME FIXME FIMXE
         -- cabalInstallArgs = "install" : [ "--force-reinstall" | force ]
+        --
+        -- TODO
+        --
+        -- * we should use "--force-reinstalls" only if requested by the user
+        --   on the command line and if the repository actually changed.
+        --
+        -- * we should use "--reinstall" only if the repository changed.
+        --
+        -- * we should catch a cabal exception that recommends usage of
+        --   reinstall in situtation when the repository didn't change
+        --   (or we shouldn't attempt to build at all).
+        --
         cabalInstallArgs = "install" : [ "--force-reinstall" | True ]
 
         cabalInstall repoUrl = case lookupProgram cabalProgram programDb of
